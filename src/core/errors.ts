@@ -16,9 +16,12 @@ export class ConfigError extends ArceusError {
 }
 
 export class ProviderError extends ArceusError {
-  public constructor(message: string) {
+  public readonly statusCode: number | undefined;
+
+  public constructor(message: string, statusCode?: number) {
     super("PROVIDER_ERROR", message);
     this.name = "ProviderError";
+    this.statusCode = statusCode;
   }
 }
 
