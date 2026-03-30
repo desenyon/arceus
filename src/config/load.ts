@@ -6,6 +6,64 @@ import { ConfigError } from "../core/errors.js";
 import type { ArceusConfig, ModelProfile } from "../core/types.js";
 import { DEFAULT_CONFIG } from "./schema.js";
 
+function validateConfig(config: ArceusConfig): void {
+  const { models, routing } = config;
+
+  if (!models.default) {
+    throw new ConfigError("models.default must be set.");
+  }
+
+  if (!Array.isArray(models.profiles) || models.profiles.length === 0) {
+    throw new ConfigError("models.profiles must be a non-empty array.");
+  }
+
+  const ids = new Set<string>();
+
+  for (const profile of models.profiles) {
+    if (!profile.id) {
+      throw new ConfigError("Each model profile must have an id.");
+    }
+
+    if (ids.has(profile.id)) {
+      throw new ConfigError(`Duplicate model profile id: ${profile.id}.`);
+    }
+
+    ids.add(profile.id);
+
+    if (!profile.provider) {
+      throw new ConfigError(`Model profile ${profile.id} must have a provider.`);
+    }
+
+    if (!profile.model) {
+      throw new ConfigError(`Model profile ${profile.id} must have a model name.`);
+    }
+
+    if (!Array.isArray(profile.roles) || profile.roles.length === 0) {
+      throw new ConfigError(`Model profile ${profile.id} must have at least one role.`);
+    }
+  }
+
+  if (!ids.has(models.default)) {
+    throw new ConfigError(`models.default references unknown profile: ${models.default}.`);
+  }
+
+  if (routing.fallbackModel && !ids.has(routing.fallbackModel)) {
+    throw new ConfigError(`routing.fallbackModel references unknown profile: ${routing.fallbackModel}.`);
+  }
+
+  if (routing.planModel && !ids.has(routing.planModel)) {
+    throw new ConfigError(`routing.planModel references unknown profile: ${routing.planModel}.`);
+  }
+
+  if (routing.executeModel && !ids.has(routing.executeModel)) {
+    throw new ConfigError(`routing.executeModel references unknown profile: ${routing.executeModel}.`);
+  }
+
+  if (routing.reviewModel && !ids.has(routing.reviewModel)) {
+    throw new ConfigError(`routing.reviewModel references unknown profile: ${routing.reviewModel}.`);
+  }
+}
+
 export interface ConfigResolution {
   config: ArceusConfig;
   globalPath: string;
@@ -97,6 +155,7 @@ export async function loadConfig(cwd: string): Promise<ConfigResolution> {
   const globalConfig = await readConfigFile(globalPath);
   const projectConfig = await readConfigFile(projectPath);
   const config = mergeConfig(mergeConfig(DEFAULT_CONFIG, globalConfig), projectConfig);
+  validateConfig(config);
 
   return {
     config,
