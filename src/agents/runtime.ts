@@ -1,6 +1,7 @@
 import type { SessionEvent } from "../core/events.js";
 import { createEventId } from "../core/events.js";
-import type { ArceusConfig, ChangeSet, ProviderRequest, RuntimeResult, TaskRequest } from "../core/types.js";
+import type { ArceusConfig, ChangeSet, ModelProfile, ProviderRequest, RuntimeResult, TaskRequest } from "../core/types.js";
+import { ProviderError } from "../core/errors.js";
 import { ModelRouter } from "./router.js";
 import { ProviderRegistry } from "../providers/index.js";
 import { RepoContextTool } from "../tools/repo-context.js";
@@ -64,6 +65,22 @@ function summarizeRepoContext(files: string[], gitStatus: string): string {
   ].join("\n");
 }
 
+async function invokeWithFallback<TStructured>(
+  registry: ProviderRegistry,
+  primary: ModelProfile,
+  fallback: ModelProfile | undefined,
+  request: ProviderRequest
+): Promise<import("../core/types.js").ProviderResponse<TStructured>> {
+  try {
+    return await registry.get(primary).invoke<TStructured>(request);
+  } catch (error) {
+    if (fallback && fallback.id !== primary.id && error instanceof ProviderError) {
+      return await registry.get(fallback).invoke<TStructured>({ ...request, profile: fallback });
+    }
+    throw error;
+  }
+}
+
 export class AgentRuntime {
   public readonly diffTool = new DiffTool();
   public readonly fileTool = new FileTool();
@@ -77,12 +94,16 @@ export class AgentRuntime {
 
   public async runTask(request: TaskRequest): Promise<{ events: SessionEvent[]; result: RuntimeResult }> {
     const models = this.router.resolveModels(request.mode, request.modelOverride);
+    const fallbackProfile = this.config.routing.fallbackModel
+      ? this.router.resolveModels(request.mode, this.config.routing.fallbackModel).executor
+      : undefined;
     const repoContext = await this.repoContextTool.collect(request.cwd);
     const repoSummary = summarizeRepoContext(repoContext.files, repoContext.gitStatus);
+    const sessionId = request.sessionId ?? "standalone";
     const events: SessionEvent[] = [
       {
         id: createEventId(),
-        sessionId: request.sessionId ?? "standalone",
+        sessionId,
         kind: "task.started",
         timestamp: new Date().toISOString(),
         origin: "user",
@@ -93,7 +114,7 @@ export class AgentRuntime {
       },
       {
         id: createEventId(),
-        sessionId: request.sessionId ?? "standalone",
+        sessionId,
         kind: "model.switched",
         timestamp: new Date().toISOString(),
         origin: "system",
@@ -112,7 +133,7 @@ export class AgentRuntime {
       repoContext,
       output: "text"
     };
-    const planResponse = await this.providers.get(models.planner).invoke(planRequest);
+    const planResponse = await invokeWithFallback(this.providers, models.planner, fallbackProfile, planRequest);
     const plan = planResponse.text;
 
     let changeSet: ChangeSet | undefined;
@@ -127,7 +148,7 @@ export class AgentRuntime {
         repoContext,
         output: "changeset"
       };
-      const executeResponse = await this.providers.get(models.executor).invoke<ChangeSet>(executeRequest);
+      const executeResponse = await invokeWithFallback<ChangeSet>(this.providers, models.executor, fallbackProfile, executeRequest);
       changeSet = executeResponse.structured;
 
       if (!changeSet) {
@@ -140,7 +161,7 @@ export class AgentRuntime {
 
       events.push({
         id: createEventId(),
-        sessionId: request.sessionId ?? "standalone",
+        sessionId,
         kind: "diff.prepared",
         timestamp: new Date().toISOString(),
         origin: "agent",
@@ -160,12 +181,12 @@ export class AgentRuntime {
       repoContext,
       output: "text"
     };
-    const reviewResponse = await this.providers.get(models.reviewer).invoke(reviewRequest);
+    const reviewResponse = await invokeWithFallback(this.providers, models.reviewer, fallbackProfile, reviewRequest);
     const review = reviewResponse.text;
 
     events.push({
       id: createEventId(),
-      sessionId: request.sessionId ?? "standalone",
+      sessionId,
       kind: "task.completed",
       timestamp: new Date().toISOString(),
       origin: "agent",
