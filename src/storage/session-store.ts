@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 
 import type { SessionEvent } from "../core/events.js";
 
@@ -80,6 +80,21 @@ export class SessionStore {
 
       throw error;
     }
+  }
+
+  public async deleteSession(sessionId: string): Promise<void> {
+    const metaPath = this.descriptorPath(sessionId);
+    const eventsPath = this.eventLogPath(sessionId);
+
+    await Promise.all(
+      [metaPath, eventsPath].map((filePath) =>
+        unlink(filePath).catch((error) => {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+            throw error;
+          }
+        })
+      )
+    );
   }
 
   public async listSessionIds(): Promise<string[]> {
