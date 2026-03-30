@@ -100,6 +100,7 @@ export interface RepoContext {
   files: string[];
   gitStatus: string;
   recentDiff?: string;
+  fileContents?: Record<string, string>;
 }
 
 export interface TaskRequest {
