@@ -1,5 +1,33 @@
-dist
-node_modules
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Session and persistence data
+.arceus/
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS artifacts
 .DS_Store
-.arceus
-coverage
+Thumbs.db
+
+# Test coverage
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript incremental build info
+*.tsbuildinfo
