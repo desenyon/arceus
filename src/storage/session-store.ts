@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 
 import type { SessionEvent } from "../core/events.js";
 
@@ -51,18 +51,7 @@ export class SessionStore {
   public async appendEvent(event: SessionEvent): Promise<void> {
     await this.ensure();
     const filePath = this.eventLogPath(event.sessionId);
-    const line = `${JSON.stringify(event)}\n`;
-    let contents = "";
-
-    try {
-      contents = await readFile(filePath, "utf8");
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-        throw error;
-      }
-    }
-
-    await writeFile(filePath, `${contents}${line}`, "utf8");
+    await appendFile(filePath, `${JSON.stringify(event)}\n`, "utf8");
   }
 
   public async readEvents(sessionId: string): Promise<SessionEvent[]> {
