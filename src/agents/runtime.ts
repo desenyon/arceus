@@ -20,21 +20,37 @@ function buildPlanPrompt(request: TaskRequest, repoSummary: string): string {
   ].join("\n");
 }
 
-function buildExecutorPrompt(request: TaskRequest, repoSummary: string, plan: string): string {
+function buildExecutorPrompt(
+  request: TaskRequest,
+  repoSummary: string,
+  plan: string,
+  fileContents: Record<string, string>
+): string {
+  const fileSection = Object.entries(fileContents)
+    .slice(0, 15)
+    .map(([filePath, content]) => `### ${filePath}\n\`\`\`\n${content}\n\`\`\``)
+    .join("\n\n");
+
   return [
     "You are Arceus executor.",
     "Return JSON only with shape:",
     "{\"summary\": string, \"warnings\": string[], \"operations\": [{\"type\": \"create|update|delete|rename\", \"path\": string, \"reason\": string, \"before\"?: string, \"after\"?: string, \"fromPath\"?: string}]}",
-    "Prefer minimal, reviewable file changes.",
-    "Include full file contents in after/before fields for touched files.",
+    "Rules:",
+    "- For update/delete/rename, set 'before' to the EXACT current file content shown below.",
+    "- For create/update, set 'after' to the complete new file content.",
+    "- Prefer minimal diffs. Do not reformat code outside the changed area.",
+    "- If a file you need is not shown below, set before to empty string.",
     "",
     `Task: ${request.input}`,
     "",
     "Plan:",
     plan,
     "",
-    repoSummary
-  ].join("\n");
+    repoSummary,
+    "",
+    fileSection ? "File contents:" : "",
+    fileSection
+  ].filter(Boolean).join("\n");
 }
 
 function buildReviewPrompt(request: TaskRequest, repoSummary: string, plan: string, changeSet?: ChangeSet): string {
@@ -55,14 +71,20 @@ function buildReviewPrompt(request: TaskRequest, repoSummary: string, plan: stri
   ].join("\n");
 }
 
-function summarizeRepoContext(files: string[], gitStatus: string): string {
-  return [
+function summarizeRepoContext(files: string[], gitStatus: string, recentDiff?: string): string {
+  const parts = [
     "Indexed files:",
     files.slice(0, 50).map((file) => `- ${file}`).join("\n") || "- none",
     "",
     "Git status:",
     gitStatus || "No git status available"
-  ].join("\n");
+  ];
+
+  if (recentDiff) {
+    parts.push("", "Recent diff:", recentDiff.slice(0, 4000));
+  }
+
+  return parts.join("\n");
 }
 
 async function invokeWithFallback<TStructured>(
@@ -98,7 +120,7 @@ export class AgentRuntime {
       ? this.router.resolveModels(request.mode, this.config.routing.fallbackModel).executor
       : undefined;
     const repoContext = await this.repoContextTool.collect(request.cwd);
-    const repoSummary = summarizeRepoContext(repoContext.files, repoContext.gitStatus);
+    const repoSummary = summarizeRepoContext(repoContext.files, repoContext.gitStatus, repoContext.recentDiff);
     const sessionId = request.sessionId ?? "standalone";
     const events: SessionEvent[] = [
       {
@@ -144,7 +166,7 @@ export class AgentRuntime {
         mode: "patch",
         profile: models.executor,
         systemPrompt: "You generate safe, explicit repository changes.",
-        prompt: buildExecutorPrompt(request, repoSummary, plan),
+        prompt: buildExecutorPrompt(request, repoSummary, plan, repoContext.fileContents ?? {}),
         repoContext,
         output: "changeset"
       };
