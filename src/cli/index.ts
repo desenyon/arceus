@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { hostname, userInfo } from "node:os";
+import { createRequire } from "node:module";
 
 import { createAppContext } from "./context.js";
 import { initializeConfig, setDefaultModel } from "../config/load.js";
@@ -9,6 +10,9 @@ import { LiveSessionClient } from "../live/client.js";
 import { LiveSessionHost } from "../live/server.js";
 import { TuiApp } from "../tui/app.js";
 import type { SessionParticipant } from "../core/events.js";
+
+const require = createRequire(import.meta.url);
+const { version } = require("../../package.json") as { version: string };
 
 function parseFlags(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
@@ -52,26 +56,32 @@ function createParticipant(): SessionParticipant {
 
 function printUsage(): void {
   console.log([
-    "Arceus",
+    `Arceus v${version}`,
     "",
     "Usage:",
-    "  arceus",
-    "  arceus chat",
-    "  arceus run <task> [--mode plan|patch] [--apply] [--model <id>] [--json] [--yes]",
-    "  arceus test [--command <cmd>]",
-    "  arceus lint [--command <cmd>]",
-    "  arceus format [--command <cmd>]",
-    "  arceus models list",
-    "  arceus models use <model-id> [--global]",
-    "  arceus session host [--port <number>]",
-    "  arceus session join <session-id>",
-    "  arceus session list",
-    "  arceus session status [session-id]",
-    "  arceus diff",
-    "  arceus git status",
-    "  arceus git stage",
-    "  arceus git commit [--message <msg>]",
-    "  arceus config init [--global]"
+    "  arceus                                     Open TUI",
+    "  arceus chat                                Open TUI (alias)",
+    "  arceus run <task> [--mode plan|patch]      Run a task",
+    "    [--apply] [--yes] [--stage] [--commit]",
+    "    [--model <id>] [--json]",
+    "  arceus test [--command <cmd>]              Run test command",
+    "  arceus lint [--command <cmd>]              Run lint command",
+    "  arceus format [--command <cmd>]            Run format command",
+    "  arceus diff                                Show git diff",
+    "  arceus git status                          Show git status",
+    "  arceus git stage                           Stage all changes",
+    "  arceus git commit [--message <msg>]        Commit staged changes",
+    "  arceus models list                         List model profiles",
+    "  arceus models use <model-id> [--global]    Set default model",
+    "  arceus session host [--port <number>]      Host a live session",
+    "  arceus session join <session-id>           Join a live session",
+    "  arceus session list                        List saved sessions",
+    "  arceus session status [session-id]         Show session details",
+    "  arceus session clean <session-id>          Delete a session",
+    "  arceus pr [--push]                         Show PR draft",
+    "  arceus config init [--global]              Initialize config",
+    "  arceus version                             Show version",
+    "  arceus help                                Show this help"
   ].join("\n"));
 }
 
@@ -134,6 +144,12 @@ async function runConfiguredShellCommand(
 async function run(): Promise<void> {
   const cwd = process.cwd();
   const argv = process.argv.slice(2);
+
+  if (argv[0] === "--version" || argv[0] === "-v") {
+    console.log(version);
+    return;
+  }
+
   const [command, subcommand, ...rest] = argv;
 
   if (!command) {
@@ -143,6 +159,16 @@ async function run(): Promise<void> {
 
   if (command === "chat") {
     await startTui(cwd);
+    return;
+  }
+
+  if (command === "version") {
+    console.log(`Arceus v${version}`);
+    return;
+  }
+
+  if (command === "help" || command === "--help" || command === "-h") {
+    printUsage();
     return;
   }
 
@@ -265,8 +291,6 @@ async function run(): Promise<void> {
     const context = await createAppContext(cwd);
     const status = await context.gitTool.getStatus(cwd, context.configResolution.config.tools.shell, context.configResolution.config.tools.commandTimeoutMs);
     console.log(status.raw || "No git status available.");
-    const draft = buildPullRequestDraft(status);
-    console.log(`\nSuggested PR title: ${draft.title}`);
     return;
   }
 
@@ -285,6 +309,28 @@ async function run(): Promise<void> {
       : buildCommitMessage();
     const status = await context.gitTool.commit(cwd, context.configResolution.config.tools.shell, context.configResolution.config.tools.commandTimeoutMs, message);
     console.log(status.raw);
+    return;
+  }
+
+  if (command === "pr") {
+    const { flags } = parseFlags([subcommand ?? "", ...rest].filter(Boolean));
+    const context = await createAppContext(cwd);
+    const status = await context.gitTool.getStatus(cwd, context.configResolution.config.tools.shell, context.configResolution.config.tools.commandTimeoutMs);
+    const draft = buildPullRequestDraft(status);
+    console.log(`Title: ${draft.title}`);
+    console.log("");
+    console.log(draft.body);
+
+    if (flags.has("--push")) {
+      const pushResult = await context.shellTool.run(
+        "git push --set-upstream origin HEAD",
+        cwd,
+        context.configResolution.config.tools.shell,
+        context.configResolution.config.tools.commandTimeoutMs
+      );
+      console.log(pushResult.stdout.trim() || pushResult.stderr.trim());
+    }
+
     return;
   }
 
@@ -362,8 +408,14 @@ async function run(): Promise<void> {
     return;
   }
 
-  if (command === "help") {
-    printUsage();
+  if (command === "session" && subcommand === "clean") {
+    const sessionId = rest[0];
+    if (!sessionId) {
+      throw new Error("Session id is required. Use 'arceus session list' to find session ids.");
+    }
+    const context = await createAppContext(cwd);
+    await context.store.deleteSession(sessionId);
+    console.log(`Deleted session ${sessionId}.`);
     return;
   }
 
