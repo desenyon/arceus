@@ -61,13 +61,26 @@ function wrapLines(value: string, width: number): string[] {
   return wrapped;
 }
 
-function renderBox(title: string, lines: string[], width: number, height: number, theme: Theme): string[] {
+function renderBox(
+  title: string,
+  lines: string[],
+  width: number,
+  height: number,
+  theme: Theme,
+  scrollOffset = 0
+): string[] {
   const innerWidth = Math.max(width - 2, 0);
   const top = `${theme.dim}┌${"─".repeat(Math.max(innerWidth, 0))}┐${theme.reset}`;
   const bottom = `${theme.dim}└${"─".repeat(Math.max(innerWidth, 0))}┘${theme.reset}`;
   const titleLine = truncate(`${title}`, innerWidth);
   const contentHeight = Math.max(height - 2, 0);
-  const padded = lines.slice(0, contentHeight).map((line) => `${theme.dim}│${theme.reset}${truncate(line, innerWidth)}${theme.dim}│${theme.reset}`);
+
+  const scrolled = lines.slice(
+    Math.min(scrollOffset, Math.max(lines.length - contentHeight, 0)),
+    Math.min(scrollOffset, Math.max(lines.length - contentHeight, 0)) + contentHeight
+  );
+
+  const padded = scrolled.map((line) => `${theme.dim}│${theme.reset}${truncate(line, innerWidth)}${theme.dim}│${theme.reset}`);
 
   while (padded.length < contentHeight) {
     padded.push(`${theme.dim}│${theme.reset}${" ".repeat(innerWidth)}${theme.dim}│${theme.reset}`);
@@ -89,6 +102,7 @@ export interface TuiViewModel {
   currentModelId: string;
   events: SessionEvent[];
   inspectorLines: string[];
+  inspectorScrollOffset: number;
   inspectorTitle: string;
   message: string;
   participants: SessionParticipant[];
@@ -147,9 +161,21 @@ export function renderDashboard(view: TuiViewModel, columns: number, rows: numbe
     ? view.inspectorLines.flatMap((line) => wrapLines(line, inspectorWidth - 4))
     : ["No inspector content yet."];
 
+  const totalInspectorLines = inspectorSource.length;
+  const scrollIndicator = totalInspectorLines > bodyHeight - 2
+    ? ` [${view.inspectorScrollOffset + 1}-${Math.min(view.inspectorScrollOffset + bodyHeight - 2, totalInspectorLines)}/${totalInspectorLines}]`
+    : "";
+
   const sidebarBox = renderBox(" Arceus ", sidebarLines, sidebarWidth, bodyHeight, theme);
   const eventsBox = renderBox(" Event Stream ", eventLines, eventWidth, bodyHeight, theme);
-  const inspectorBox = renderBox(` ${view.inspectorTitle} `, inspectorSource, inspectorWidth, bodyHeight, theme);
+  const inspectorBox = renderBox(
+    ` ${view.inspectorTitle}${scrollIndicator} `,
+    inspectorSource,
+    inspectorWidth,
+    bodyHeight,
+    theme,
+    view.inspectorScrollOffset
+  );
   const lines: string[] = [];
 
   for (let index = 0; index < bodyHeight; index += 1) {
@@ -158,13 +184,14 @@ export function renderDashboard(view: TuiViewModel, columns: number, rows: numbe
 
   const promptLine = `${theme.accent}${view.prompt}${theme.reset}${view.currentInput}`;
   const footerText = `${view.message || "Commands: /help /mode plan|patch /model <id> !<shell> /apply /quit"}`;
+  const scrollHint = totalInspectorLines > bodyHeight - 2 ? " | PgUp/PgDn to scroll inspector" : "";
   const diffPreview = view.changeSet
     ? wrapLines(view.changeSet.operations.length > 0 ? view.changeSet.operations.map((operation) => `${operation.type} ${operation.path}`).join(" | ") : "No file operations proposed.", columns)
     : ["No diff preview."];
 
   const footerLines = [
     truncate(promptLine, columns),
-    truncate(footerText, columns),
+    truncate(`${footerText}${scrollHint}`, columns),
     truncate(diffPreview.join(" "), columns)
   ];
 
