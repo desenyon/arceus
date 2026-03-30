@@ -1,6 +1,6 @@
 {
   "name": "arceus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Arceus is a fast, terminal-native, collaboration-first coding agent.",
   "type": "module",
   "bin": {
@@ -14,7 +14,8 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/cli/index.ts",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "test:watch": "tsx --watch src/cli/index.ts"
+    "test:watch": "tsx --watch src/cli/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
