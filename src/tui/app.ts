@@ -33,13 +33,14 @@ export class TuiApp {
   private currentMode: "patch" | "plan" = "plan";
   private currentModelId: string;
   private events: SessionEvent[] = [];
-  private inspectorMode: "changes" | "diff" | "help" | "plan" | "review" = "help";
+  private inspectorMode: "changes" | "diff" | "help" | "output" | "plan" | "review" = "help";
   private inspectorScrollOffset = 0;
   private message = "Ready.";
   private lastChangeSet: ChangeSet | undefined;
   private lastDiffText = "";
   private lastPlan = "";
   private lastReview = "";
+  private lastCommandOutput = "";
   private participants: SessionParticipant[] = [];
   private branch = "n/a";
   private readonly theme: Theme;
@@ -195,12 +196,12 @@ export class TuiApp {
 
     if (input.startsWith("/view ")) {
       const mode = input.replace("/view ", "").trim();
-      if (mode === "changes" || mode === "diff" || mode === "help" || mode === "plan" || mode === "review") {
+      if (mode === "changes" || mode === "diff" || mode === "help" || mode === "output" || mode === "plan" || mode === "review") {
         this.inspectorMode = mode;
         this.inspectorScrollOffset = 0;
         this.message = `Inspector set to ${mode}.`;
       } else {
-        this.message = "Unknown view. Use changes, diff, help, plan, or review.";
+        this.message = "Unknown view. Use changes, diff, help, output, plan, or review.";
       }
       return;
     }
@@ -309,6 +310,7 @@ export class TuiApp {
         this.dependencies.config.tools.commandTimeoutMs
       );
 
+      const output = `${result.stdout}\n${result.stderr}`.trim();
       await this.emitEvent({
         id: createEventId(),
         sessionId: this.dependencies.sessionId ?? "standalone",
@@ -318,9 +320,12 @@ export class TuiApp {
         payload: {
           command,
           exitCode: result.exitCode,
-          output: `${result.stdout}\n${result.stderr}`.trim()
+          output
         }
       });
+      this.lastCommandOutput = `$ ${command}\n\n${output || "(no output)"}`;
+      this.inspectorMode = "output";
+      this.inspectorScrollOffset = 0;
       this.message = `Command exited with ${result.exitCode}.`;
       await this.refreshBranch();
     } catch (error) {
@@ -534,6 +539,13 @@ export class TuiApp {
       };
     }
 
+    if (this.inspectorMode === "output") {
+      return {
+        title: " Output ",
+        lines: this.lastCommandOutput ? this.lastCommandOutput.split("\n") : ["No command output yet."]
+      };
+    }
+
     return {
       title: " Help ",
       lines: [
@@ -541,7 +553,7 @@ export class TuiApp {
         "",
         "Commands:",
         "  /mode plan|patch",
-        "  /view help|plan|review|changes|diff",
+        "  /view help|plan|review|changes|diff|output",
         "  /diff",
         "  /apply",
         "  /git stage",
