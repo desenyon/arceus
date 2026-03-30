@@ -26,12 +26,15 @@ interface TuiDependencies {
   liveClient?: LiveSessionClient;
 }
 
+const INSPECTOR_SCROLL_STEP = 5;
+
 export class TuiApp {
   private currentInput = "";
   private currentMode: "patch" | "plan" = "plan";
   private currentModelId: string;
   private events: SessionEvent[] = [];
   private inspectorMode: "changes" | "diff" | "help" | "plan" | "review" = "help";
+  private inspectorScrollOffset = 0;
   private message = "Ready.";
   private lastChangeSet: ChangeSet | undefined;
   private lastDiffText = "";
@@ -116,6 +119,18 @@ export class TuiApp {
       return;
     }
 
+    if (key.name === "pagedown") {
+      this.inspectorScrollOffset += INSPECTOR_SCROLL_STEP;
+      this.render();
+      return;
+    }
+
+    if (key.name === "pageup") {
+      this.inspectorScrollOffset = Math.max(0, this.inspectorScrollOffset - INSPECTOR_SCROLL_STEP);
+      this.render();
+      return;
+    }
+
     if (!key.ctrl && !key.meta && character) {
       this.currentInput += character;
       this.render();
@@ -134,6 +149,7 @@ export class TuiApp {
 
     if (input === "/help") {
       this.inspectorMode = "help";
+      this.inspectorScrollOffset = 0;
       this.message = "Enter a prompt, /mode plan|patch, /model <id>, !<shell>, /apply, /quit. Tab toggles mode.";
       return;
     }
@@ -172,6 +188,7 @@ export class TuiApp {
 
     if (input === "/diff") {
       this.inspectorMode = "diff";
+      this.inspectorScrollOffset = 0;
       this.message = "Inspector set to diff view.";
       return;
     }
@@ -180,6 +197,7 @@ export class TuiApp {
       const mode = input.replace("/view ", "").trim();
       if (mode === "changes" || mode === "diff" || mode === "help" || mode === "plan" || mode === "review") {
         this.inspectorMode = mode;
+        this.inspectorScrollOffset = 0;
         this.message = `Inspector set to ${mode}.`;
       } else {
         this.message = "Unknown view. Use changes, diff, help, plan, or review.";
@@ -224,24 +242,42 @@ export class TuiApp {
   private async runTask(input: string): Promise<void> {
     this.message = `Running ${this.currentMode} task...`;
     this.render();
-    const { events, result } = await this.dependencies.runtime.runTask({
-      cwd: this.dependencies.cwd,
-      input,
-      mode: this.currentMode,
-      ...(this.currentModelId ? { modelOverride: this.currentModelId } : {}),
-      ...(this.dependencies.sessionId ? { sessionId: this.dependencies.sessionId } : {})
-    });
 
-    for (const event of events) {
-      await this.emitEvent(event);
+    try {
+      const { events, result } = await this.dependencies.runtime.runTask({
+        cwd: this.dependencies.cwd,
+        input,
+        mode: this.currentMode,
+        ...(this.currentModelId ? { modelOverride: this.currentModelId } : {}),
+        ...(this.dependencies.sessionId ? { sessionId: this.dependencies.sessionId } : {})
+      });
+
+      for (const event of events) {
+        await this.emitEvent(event);
+      }
+
+      this.lastPlan = result.plan;
+      this.lastReview = result.review;
+      this.lastChangeSet = result.changeSet;
+      this.lastDiffText = result.changeSet ? this.dependencies.runtime.diffTool.renderChangeSet(result.changeSet) : "";
+      this.inspectorMode = result.changeSet ? "diff" : "review";
+      this.inspectorScrollOffset = 0;
+      this.message = result.review.split("\n")[0] ?? "Task complete.";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.message = `Error: ${message}`;
+      await this.emitEvent({
+        id: createEventId(),
+        sessionId: this.dependencies.sessionId ?? "standalone",
+        kind: "ui.message",
+        timestamp: new Date().toISOString(),
+        origin: "system",
+        payload: {
+          level: "error",
+          message
+        }
+      });
     }
-
-    this.lastPlan = result.plan;
-    this.lastReview = result.review;
-    this.lastChangeSet = result.changeSet;
-    this.lastDiffText = result.changeSet ? this.dependencies.runtime.diffTool.renderChangeSet(result.changeSet) : "";
-    this.inspectorMode = result.changeSet ? "diff" : "review";
-    this.message = result.review.split("\n")[0] ?? "Task complete.";
   }
 
   private async runShell(command: string): Promise<void> {
@@ -265,27 +301,32 @@ export class TuiApp {
     };
     await this.emitEvent(started);
 
-    const result = await this.dependencies.shellTool.run(
-      command,
-      this.dependencies.cwd,
-      this.dependencies.config.tools.shell,
-      this.dependencies.config.tools.commandTimeoutMs
-    );
-
-    await this.emitEvent({
-      id: createEventId(),
-      sessionId: this.dependencies.sessionId ?? "standalone",
-      kind: "command.completed",
-      timestamp: new Date().toISOString(),
-      origin: "system",
-      payload: {
+    try {
+      const result = await this.dependencies.shellTool.run(
         command,
-        exitCode: result.exitCode,
-        output: `${result.stdout}\n${result.stderr}`.trim()
-      }
-    });
-    this.message = `Command exited with ${result.exitCode}.`;
-    await this.refreshBranch();
+        this.dependencies.cwd,
+        this.dependencies.config.tools.shell,
+        this.dependencies.config.tools.commandTimeoutMs
+      );
+
+      await this.emitEvent({
+        id: createEventId(),
+        sessionId: this.dependencies.sessionId ?? "standalone",
+        kind: "command.completed",
+        timestamp: new Date().toISOString(),
+        origin: "system",
+        payload: {
+          command,
+          exitCode: result.exitCode,
+          output: `${result.stdout}\n${result.stderr}`.trim()
+        }
+      });
+      this.message = `Command exited with ${result.exitCode}.`;
+      await this.refreshBranch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.message = `Shell error: ${message}`;
+    }
   }
 
   private async applyChangeSet(): Promise<void> {
@@ -310,68 +351,84 @@ export class TuiApp {
       return;
     }
 
-    const touched = await this.dependencies.runtime.fileTool.applyChangeSet(this.dependencies.cwd, this.lastChangeSet);
+    try {
+      const touched = await this.dependencies.runtime.fileTool.applyChangeSet(this.dependencies.cwd, this.lastChangeSet);
 
-    for (const file of touched) {
-      await this.emitEvent({
-        id: createEventId(),
-        sessionId: this.dependencies.sessionId ?? "standalone",
-        kind: "file.changed",
-        timestamp: new Date().toISOString(),
-        origin: "agent",
-        payload: {
-          path: file,
-          changeType: "update",
-          source: "agent"
-        }
-      });
+      for (const file of touched) {
+        await this.emitEvent({
+          id: createEventId(),
+          sessionId: this.dependencies.sessionId ?? "standalone",
+          kind: "file.changed",
+          timestamp: new Date().toISOString(),
+          origin: "agent",
+          payload: {
+            path: file,
+            changeType: "update",
+            source: "agent"
+          }
+        });
+      }
+
+      this.message = `Applied ${touched.length} file change(s).`;
+      await this.refreshBranch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.message = `Apply failed: ${message}`;
     }
-
-    this.message = `Applied ${touched.length} file change(s).`;
-    await this.refreshBranch();
   }
 
   private async stageGitChanges(): Promise<void> {
-    const status = await this.dependencies.gitTool.stageAll(
-      this.dependencies.cwd,
-      this.dependencies.config.tools.shell,
-      this.dependencies.config.tools.commandTimeoutMs
-    );
-    await this.emitEvent({
-      id: createEventId(),
-      sessionId: this.dependencies.sessionId ?? "standalone",
-      kind: "git.action",
-      timestamp: new Date().toISOString(),
-      origin: "user",
-      payload: {
-        action: "stage",
-        detail: "Staged repository changes."
-      }
-    });
-    this.message = status.raw || "Staged changes.";
+    try {
+      const status = await this.dependencies.gitTool.stageAll(
+        this.dependencies.cwd,
+        this.dependencies.config.tools.shell,
+        this.dependencies.config.tools.commandTimeoutMs
+      );
+      await this.emitEvent({
+        id: createEventId(),
+        sessionId: this.dependencies.sessionId ?? "standalone",
+        kind: "git.action",
+        timestamp: new Date().toISOString(),
+        origin: "user",
+        payload: {
+          action: "stage",
+          detail: "Staged repository changes."
+        }
+      });
+      this.message = status.raw || "Staged changes.";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.message = `Stage failed: ${message}`;
+    }
   }
 
   private async commitGitChanges(message: string): Promise<void> {
     const commitMessage = message || (this.lastChangeSet ? `feat: ${this.lastChangeSet.summary}` : "chore: update repository state");
-    const status = await this.dependencies.gitTool.commit(
-      this.dependencies.cwd,
-      this.dependencies.config.tools.shell,
-      this.dependencies.config.tools.commandTimeoutMs,
-      commitMessage
-    );
-    await this.emitEvent({
-      id: createEventId(),
-      sessionId: this.dependencies.sessionId ?? "standalone",
-      kind: "git.action",
-      timestamp: new Date().toISOString(),
-      origin: "user",
-      payload: {
-        action: "commit",
-        detail: commitMessage
-      }
-    });
-    this.message = status.raw || `Committed with message: ${commitMessage}`;
-    await this.refreshBranch();
+
+    try {
+      const status = await this.dependencies.gitTool.commit(
+        this.dependencies.cwd,
+        this.dependencies.config.tools.shell,
+        this.dependencies.config.tools.commandTimeoutMs,
+        commitMessage
+      );
+      await this.emitEvent({
+        id: createEventId(),
+        sessionId: this.dependencies.sessionId ?? "standalone",
+        kind: "git.action",
+        timestamp: new Date().toISOString(),
+        origin: "user",
+        payload: {
+          action: "commit",
+          detail: commitMessage
+        }
+      });
+      this.message = status.raw || `Committed with message: ${commitMessage}`;
+      await this.refreshBranch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.message = `Commit failed: ${message}`;
+    }
   }
 
   private async emitEvent(event: SessionEvent): Promise<void> {
@@ -396,12 +453,16 @@ export class TuiApp {
   }
 
   private async refreshBranch(): Promise<void> {
-    const status = await this.dependencies.gitTool.getStatus(
-      this.dependencies.cwd,
-      this.dependencies.config.tools.shell,
-      this.dependencies.config.tools.commandTimeoutMs
-    );
-    this.branch = status.branch;
+    try {
+      const status = await this.dependencies.gitTool.getStatus(
+        this.dependencies.cwd,
+        this.dependencies.config.tools.shell,
+        this.dependencies.config.tools.commandTimeoutMs
+      );
+      this.branch = status.branch;
+    } catch {
+      // non-git directories are allowed
+    }
   }
 
   private render(): void {
@@ -414,6 +475,7 @@ export class TuiApp {
       currentModelId: this.currentModelId,
       events: this.events,
       inspectorLines: inspector.lines,
+      inspectorScrollOffset: this.inspectorScrollOffset,
       inspectorTitle: inspector.title,
       message: this.message,
       participants: this.participants,
@@ -476,17 +538,25 @@ export class TuiApp {
       title: " Help ",
       lines: [
         "Prompt input runs the agent.",
-        "/mode plan|patch",
-        "/view help|plan|review|changes|diff",
-        "/diff",
-        "/apply",
-        "/git stage",
-        "/git commit <message>",
-        "/test",
-        "/lint",
-        "/format",
-        "!<shell command>",
-        "/quit"
+        "",
+        "Commands:",
+        "  /mode plan|patch",
+        "  /view help|plan|review|changes|diff",
+        "  /diff",
+        "  /apply",
+        "  /git stage",
+        "  /git commit <message>",
+        "  /test",
+        "  /lint",
+        "  /format",
+        "  !<shell command>",
+        "  /quit",
+        "",
+        "Keyboard:",
+        "  Tab       toggle plan/patch mode",
+        "  PgDn      scroll inspector down",
+        "  PgUp      scroll inspector up",
+        "  Ctrl+C    quit"
       ]
     };
   }
