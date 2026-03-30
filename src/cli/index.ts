@@ -10,6 +10,7 @@ import { LiveSessionClient } from "../live/client.js";
 import { LiveSessionHost } from "../live/server.js";
 import { TuiApp } from "../tui/app.js";
 import type { SessionParticipant } from "../core/events.js";
+import { SearchTool } from "../tools/search-tool.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../../package.json") as { version: string };
@@ -71,6 +72,10 @@ function printUsage(): void {
     "  arceus git status                          Show git status",
     "  arceus git stage                           Stage all changes",
     "  arceus git commit [--message <msg>]        Commit staged changes",
+    "  arceus git push [--no-upstream]            Push current branch",
+    "  arceus git log [--limit <n>]               Show recent commits",
+    "  arceus git checkout <branch>               Checkout a branch",
+    "  arceus git checkout -b <branch>            Create and checkout a branch",
     "  arceus models list                         List model profiles",
     "  arceus models use <model-id> [--global]    Set default model",
     "  arceus session host [--port <number>]      Host a live session",
@@ -78,8 +83,10 @@ function printUsage(): void {
     "  arceus session list                        List saved sessions",
     "  arceus session status [session-id]         Show session details",
     "  arceus session clean <session-id>          Delete a session",
+    "  arceus search <pattern> [--glob <glob>]    Search file contents",
     "  arceus pr [--push]                         Show PR draft",
     "  arceus config init [--global]              Initialize config",
+    "  arceus config show                         Show resolved config",
     "  arceus version                             Show version",
     "  arceus help                                Show this help"
   ].join("\n"));
@@ -178,6 +185,31 @@ async function run(): Promise<void> {
     const targetPath = flags.has("--global") ? context.configResolution.globalPath : context.configResolution.projectPath;
     await initializeConfig(targetPath);
     console.log(`Initialized config at ${targetPath}`);
+    return;
+  }
+
+  if (command === "config" && subcommand === "show") {
+    const context = await createAppContext(cwd);
+    console.log(JSON.stringify(context.configResolution.config, null, 2));
+    return;
+  }
+
+  if (command === "search") {
+    const { flags, positional } = parseFlags([subcommand ?? "", ...rest].filter(Boolean));
+    const pattern = positional.join(" ").trim();
+    if (!pattern) {
+      throw new Error("Search pattern is required.");
+    }
+    const glob = typeof flags.get("--glob") === "string" ? (flags.get("--glob") as string) : undefined;
+    const searchTool = new SearchTool();
+    const matches = await searchTool.grepFiles(cwd, pattern, 100, glob);
+    if (matches.length === 0) {
+      console.log("No matches found.");
+      return;
+    }
+    for (const match of matches) {
+      console.log(`${match.file}:${match.line}: ${match.text}`);
+    }
     return;
   }
 
@@ -309,6 +341,53 @@ async function run(): Promise<void> {
       : buildCommitMessage();
     const status = await context.gitTool.commit(cwd, context.configResolution.config.tools.shell, context.configResolution.config.tools.commandTimeoutMs, message);
     console.log(status.raw);
+    return;
+  }
+
+  if (command === "git" && subcommand === "push") {
+    const { flags } = parseFlags(rest);
+    const context = await createAppContext(cwd);
+    const setUpstream = !flags.has("--no-upstream");
+    const result = await context.gitTool.push(
+      cwd,
+      context.configResolution.config.tools.shell,
+      context.configResolution.config.tools.commandTimeoutMs,
+      setUpstream
+    );
+    console.log(result.raw || "Push complete.");
+    return;
+  }
+
+  if (command === "git" && subcommand === "log") {
+    const { flags } = parseFlags(rest);
+    const context = await createAppContext(cwd);
+    const limit = Number(flags.get("--limit") ?? "20");
+    const log = await context.gitTool.log(
+      cwd,
+      context.configResolution.config.tools.shell,
+      context.configResolution.config.tools.commandTimeoutMs,
+      limit
+    );
+    console.log(log || "No commits found.");
+    return;
+  }
+
+  if (command === "git" && subcommand === "checkout") {
+    const { flags, positional } = parseFlags(rest);
+    const branch = positional[0];
+    if (!branch) {
+      throw new Error("Branch name is required.");
+    }
+    const context = await createAppContext(cwd);
+    const create = flags.has("-b");
+    const status = await context.gitTool.checkoutBranch(
+      cwd,
+      context.configResolution.config.tools.shell,
+      context.configResolution.config.tools.commandTimeoutMs,
+      branch,
+      create
+    );
+    console.log(status.raw || `Switched to branch '${branch}'.`);
     return;
   }
 
